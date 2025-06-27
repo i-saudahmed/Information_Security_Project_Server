@@ -1,6 +1,6 @@
 # Admin Dashboard Backend
 
-A simple admin dashboard backend API built with Node.js and Express.
+A simple admin dashboard backend API built with Node.js and Express. 
 
 ## Features
 

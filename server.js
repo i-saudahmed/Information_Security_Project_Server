@@ -1,8 +1,9 @@
 const express = require("express");
-const mongoose = require("mongoose");
+const mysql = require("mysql2/promise");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const session = require("express-session");
+const bcrypt = require("bcryptjs");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -10,309 +11,571 @@ const PORT = process.env.PORT || 5000;
 // ⚠️ INTENTIONALLY VULNERABLE: Very permissive CORS configuration
 app.use(
   cors({
-    origin: true, // Allows any origin
+    origin: true,
     credentials: true,
   })
 );
 
-// ⚠️ INTENTIONALLY VULNERABLE: No rate limiting or size limits
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 
-// ⚠️ INTENTIONALLY VULNERABLE: Weak session configuration
 app.use(
   session({
-    secret: "weak-secret-key", // Hardcoded weak secret
+    secret: "weak-secret-key",
     resave: false,
     saveUninitialized: true,
     cookie: {
-      secure: false, // No HTTPS requirement
-      httpOnly: false, // Allows JavaScript access to cookies
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      secure: false,
+      httpOnly: false,
+      maxAge: 24 * 60 * 60 * 1000,
     },
   })
 );
 
-// MongoDB Connection (will be configured later)
+const dbConfig = {
+  host: "mysql.railway.internal",
+  port: 3306,
+  user: "root",
+  password: "gLiJqASpuPYfsJwQzvTShvoWWPhlAwYg",
+  database: "railway",
+  timezone: "+00:00",
+};
+
+let db;
+
 const connectDB = async () => {
   try {
-    // This will be updated when user provides URI
-    await mongoose.connect(
-      process.env.MONGODB_URI || "mongodb://localhost:27017/vulnerable_admin"
-    );
-    console.log("MongoDB connected");
+    db = await mysql.createConnection(dbConfig);
+    console.log("MySQL connected successfully");
+
+    await initializeDatabase();
   } catch (error) {
-    console.error("MongoDB connection error:", error);
+    console.error("MySQL connection error:", error);
+    console.log("Falling back to in-memory mode for demo purposes");
+    db = null;
   }
 };
 
-// Sample data for demonstration
-const sampleUsers = [
+const initializeDatabase = async () => {
+  try {
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(50) DEFAULT 'User',
+        last_login DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_name VARCHAR(255) NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        status VARCHAR(50) DEFAULT 'Pending',
+        order_date DATE NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await insertSampleData();
+  } catch (error) {
+    console.error("Database initialization error:", error);
+  }
+};
+
+const insertSampleData = async () => {
+  try {
+    const [existingUsers] = await db.execute(
+      "SELECT COUNT(*) as count FROM users"
+    );
+    if (existingUsers[0].count > 0) {
+      console.log("Sample data already exists");
+      return;
+    }
+
+    const sampleUsers = [
+      {
+        username: "admin",
+        email: "admin@example.com",
+        password: "admin123",
+        role: "Administrator",
+      },
+      {
+        username: "user1",
+        email: "user1@example.com",
+        password: "user123",
+        role: "User",
+      },
+      {
+        username: "operator",
+        email: "operator@example.com",
+        password: "op123",
+        role: "Operator",
+      },
+    ];
+
+    for (const user of sampleUsers) {
+      await db.execute(
+        "INSERT INTO users (username, email, password, role, last_login) VALUES (?, ?, ?, ?, ?)",
+        [user.username, user.email, user.password, user.role, "2024-01-15"]
+      );
+    }
+
+    const sampleOrders = [
+      {
+        customer_name: "John Doe",
+        amount: 299.99,
+        status: "Completed",
+        order_date: "2024-01-15",
+      },
+      {
+        customer_name: "Jane Smith",
+        amount: 159.5,
+        status: "Pending",
+        order_date: "2024-01-14",
+      },
+      {
+        customer_name: "Bob Johnson",
+        amount: 89.99,
+        status: "Shipped",
+        order_date: "2024-01-13",
+      },
+      {
+        customer_name: "Alice Brown",
+        amount: 449.99,
+        status: "Processing",
+        order_date: "2024-01-12",
+      },
+    ];
+
+    for (const order of sampleOrders) {
+      await db.execute(
+        "INSERT INTO orders (customer_name, amount, status, order_date) VALUES (?, ?, ?, ?)",
+        [order.customer_name, order.amount, order.status, order.order_date]
+      );
+    }
+
+    console.log("Sample data inserted successfully");
+  } catch (error) {
+    console.error("Error inserting sample data:", error);
+  }
+};
+
+const fallbackUsers = [
   {
     id: 1,
     username: "admin",
     email: "admin@example.com",
     role: "Administrator",
     password: "admin123",
-    lastLogin: "2024-01-15",
+    last_login: "2024-01-15",
   },
   {
     id: 2,
-    username: "manager",
-    email: "manager@example.com",
-    role: "Manager",
-    password: "manager123",
-    lastLogin: "2024-01-14",
-  },
-  {
-    id: 3,
     username: "user1",
     email: "user1@example.com",
     role: "User",
     password: "user123",
-    lastLogin: "2024-01-13",
+    last_login: "2024-01-13",
   },
   {
-    id: 4,
+    id: 3,
     username: "operator",
     email: "operator@example.com",
     role: "Operator",
     password: "op123",
-    lastLogin: "2024-01-12",
+    last_login: "2024-01-12",
   },
 ];
 
-const sampleOrders = [
+const fallbackOrders = [
   {
     id: 1001,
-    customerName: "John Doe",
+    customer_name: "John Doe",
     amount: 299.99,
     status: "Completed",
-    date: "2024-01-15",
+    order_date: "2024-01-15",
   },
   {
     id: 1002,
-    customerName: "Jane Smith",
+    customer_name: "Jane Smith",
     amount: 159.5,
     status: "Pending",
-    date: "2024-01-14",
+    order_date: "2024-01-14",
   },
   {
     id: 1003,
-    customerName: "Bob Johnson",
+    customer_name: "Bob Johnson",
     amount: 89.99,
     status: "Shipped",
-    date: "2024-01-13",
+    order_date: "2024-01-13",
   },
   {
     id: 1004,
-    customerName: "Alice Brown",
+    customer_name: "Alice Brown",
     amount: 449.99,
     status: "Processing",
-    date: "2024-01-12",
+    order_date: "2024-01-12",
   },
 ];
 
-// ⚠️ INTENTIONALLY VULNERABLE: SQL Injection in login
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
 
-  // ⚠️ VULNERABILITY: Direct string concatenation allows SQL injection
-  // In a real SQL database, this would be: `SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`
-  // For demo purposes, we're simulating this vulnerability with array search
-  console.log(
-    `Simulated Query: SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`
-  );
+  try {
+    let user = null;
 
-  // ⚠️ VULNERABILITY: No input sanitization
-  let user = null;
+    if (db) {
+      const vulnerableQuery = `SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`;
+      console.log(`Query: ${vulnerableQuery}`);
 
-  // Simulate SQL injection vulnerability
-  if (username.includes("' OR '1'='1") || password.includes("' OR '1'='1")) {
-    // Simulating successful SQL injection bypass
-    user = sampleUsers[0]; // Return admin user
-    console.log("⚠️ SQL Injection detected - bypassing authentication!");
-  } else {
-    // Normal authentication (still vulnerable)
-    user = sampleUsers.find(
-      (u) => u.username === username && u.password === password
-    );
-  }
+      try {
+        const [rows] = await db.execute(vulnerableQuery);
+        user = rows[0];
+      } catch (sqlError) {
+        console.log("SQL Error:", sqlError.message);
 
-  if (user) {
-    // ⚠️ VULNERABILITY: Storing sensitive data in session
-    req.session.user = user;
-    req.session.isAuthenticated = true;
+        if (
+          username.includes("' OR '1'='1") ||
+          username.includes("' OR 1=1") ||
+          password.includes("' OR '1'='1") ||
+          password.includes("' OR 1=1")
+        ) {
+          console.log("SQL Injection detected - bypassing authentication!");
+          const [adminUser] = await db.execute(
+            "SELECT * FROM users WHERE role = 'Administrator' LIMIT 1"
+          );
+          user = adminUser[0];
+        } else {
+          return res.status(500).json({
+            success: false,
+            message: "Database error occurred",
+            error: sqlError.message,
+          });
+        }
+      }
+    } else {
+      console.log(
+        `Fallback Query: SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`
+      );
 
-    res.json({
-      success: true,
-      message: "Login successful",
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } else {
-    res.status(401).json({
+      if (
+        username.includes("' OR '1'='1") ||
+        password.includes("' OR '1'='1")
+      ) {
+        user = fallbackUsers[0];
+        console.log("SQL Injection detected - bypassing authentication!");
+      } else {
+        user = fallbackUsers.find(
+          (u) => u.username === username && u.password === password
+        );
+      }
+    }
+
+    if (user) {
+      req.session.user = user;
+      req.session.isAuthenticated = true;
+
+      res.json({
+        success: true,
+        message: "Login successful",
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role,
+        },
+      });
+    } else {
+      res.status(401).json({
+        success: false,
+        message: "Invalid credentials",
+      });
+    }
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({
       success: false,
-      message: "Invalid credentials",
+      message: "Server error",
+      error: error.message,
     });
   }
 });
 
-// ⚠️ INTENTIONALLY VULNERABLE: No CSRF protection
 app.post("/api/logout", (req, res) => {
   req.session.destroy();
   res.json({ success: true, message: "Logged out successfully" });
 });
 
-// ⚠️ INTENTIONALLY VULNERABLE: No authentication check
-app.get("/api/users", (req, res) => {
+app.get("/api/users", async (req, res) => {
   const { search } = req.query;
 
-  let users = [...sampleUsers];
+  try {
+    let users = [];
 
-  if (search) {
-    // ⚠️ VULNERABILITY: SQL Injection in search
-    console.log(
-      `Simulated Query: SELECT * FROM users WHERE username LIKE '%${search}%' OR email LIKE '%${search}%'`
-    );
+    if (db) {
+      if (search) {
+        const vulnerableQuery = `SELECT * FROM users WHERE username LIKE '%${search}%' OR email LIKE '%${search}%'`;
+        console.log(`Query: ${vulnerableQuery}`);
 
-    // Simulate SQL injection in search
-    if (search.includes("'; DROP TABLE users; --")) {
-      console.log("⚠️ SQL Injection attempt detected - simulating table drop!");
-      res.status(500).json({ error: "Database error occurred" });
-      return;
+        try {
+          const [rows] = await db.execute(vulnerableQuery);
+          users = rows;
+        } catch (sqlError) {
+          console.log("SQL Error:", sqlError.message);
+          console.log("Query that caused error:", vulnerableQuery);
+
+          return res.status(500).json({
+            error: "Database error occurred due to SQL injection",
+            details: sqlError.message,
+            query: vulnerableQuery,
+            type: "SQL_INJECTION_ERROR",
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } else {
+        const [rows] = await db.execute("SELECT * FROM users");
+        users = rows;
+      }
+    } else {
+      users = [...fallbackUsers];
+      if (search) {
+        console.log(
+          `Fallback Query: SELECT * FROM users WHERE username LIKE '%${search}%' OR email LIKE '%${search}%'`
+        );
+
+        if (
+          search.includes("'; DROP TABLE users; --") ||
+          search.includes("' OR '1'='1") ||
+          search.includes("' UNION SELECT") ||
+          search.includes("' AND 1=0")
+        ) {
+          console.log("SQL Injection attempt detected!");
+          return res.status(500).json({
+            error: "Database error occurred due to SQL injection",
+            details: "Simulated SQL injection error in fallback mode",
+            query: `SELECT * FROM users WHERE username LIKE '%${search}%' OR email LIKE '%${search}%'`,
+            type: "SQL_INJECTION_SIMULATION",
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        users = users.filter(
+          (user) =>
+            user.username.includes(search) || user.email.includes(search)
+        );
+      }
     }
 
-    users = users.filter(
-      (user) => user.username.includes(search) || user.email.includes(search)
-    );
-  }
+    users = users.map((user) => {
+      const { password, ...userWithoutPassword } = user;
+      return userWithoutPassword;
+    });
 
-  res.json(users);
+    res.json(users);
+  } catch (error) {
+    console.error("Users fetch error:", error);
+    res.status(500).json({
+      error: "Server error",
+      details: error.message,
+      type: "GENERAL_ERROR",
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
-// ⚠️ INTENTIONALLY VULNERABLE: Direct user input in response (XSS)
-app.post("/api/users", (req, res) => {
+app.post("/api/users", async (req, res) => {
   const { username, email, role } = req.body;
 
-  // ⚠️ VULNERABILITY: No input validation or sanitization
-  const newUser = {
-    id: Date.now(),
-    username: username, // Raw input - XSS vulnerable
-    email: email, // Raw input - XSS vulnerable
-    role: role,
-    password: "default123",
-    lastLogin: new Date().toISOString().split("T")[0],
-  };
+  try {
+    const newUser = {
+      username: username,
+      email: email,
+      role: role,
+      password: "default123",
+      last_login: new Date().toISOString().split("T")[0],
+    };
 
-  sampleUsers.push(newUser);
+    if (db) {
+      const [result] = await db.execute(
+        "INSERT INTO users (username, email, password, role, last_login) VALUES (?, ?, ?, ?, ?)",
+        [
+          newUser.username,
+          newUser.email,
+          newUser.password,
+          newUser.role,
+          newUser.last_login,
+        ]
+      );
+      newUser.id = result.insertId;
+    } else {
+      newUser.id = Date.now();
+      fallbackUsers.push(newUser);
+    }
 
-  res.json({
-    success: true,
-    message: `User ${username} created successfully`, // XSS vulnerable
-    user: newUser,
-  });
-});
-
-// ⚠️ INTENTIONALLY VULNERABLE: No authorization checks
-app.delete("/api/users/:id", (req, res) => {
-  const { id } = req.params;
-  const userIndex = sampleUsers.findIndex((u) => u.id == id);
-
-  if (userIndex !== -1) {
-    const deletedUser = sampleUsers.splice(userIndex, 1)[0];
     res.json({
       success: true,
-      message: `User ${deletedUser.username} deleted successfully`,
+      message: `User ${username} created successfully`,
+      user: newUser,
     });
-  } else {
-    res.status(404).json({
+  } catch (error) {
+    console.error("User creation error:", error);
+    res.status(500).json({
       success: false,
-      message: "User not found",
+      message: "Error creating user",
+      error: error.message,
     });
   }
 });
 
-// Orders endpoints
-app.get("/api/orders", (req, res) => {
-  res.json(sampleOrders);
+app.delete("/api/users/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    let deletedUser = null;
+
+    if (db) {
+      const [rows] = await db.execute("SELECT * FROM users WHERE id = ?", [id]);
+      if (rows.length > 0) {
+        deletedUser = rows[0];
+        await db.execute("DELETE FROM users WHERE id = ?", [id]);
+      }
+    } else {
+      const userIndex = fallbackUsers.findIndex((u) => u.id == id);
+      if (userIndex !== -1) {
+        deletedUser = fallbackUsers.splice(userIndex, 1)[0];
+      }
+    }
+
+    if (deletedUser) {
+      res.json({
+        success: true,
+        message: `User ${deletedUser.username} deleted successfully`,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+  } catch (error) {
+    console.error("User deletion error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error deleting user",
+      error: error.message,
+    });
+  }
 });
 
-// ⚠️ INTENTIONALLY VULNERABLE: Profile update without validation
+app.get("/api/orders", async (req, res) => {
+  try {
+    let orders = [];
+
+    if (db) {
+      const [rows] = await db.execute(
+        "SELECT * FROM orders ORDER BY created_at DESC"
+      );
+      orders = rows;
+    } else {
+      orders = [...fallbackOrders];
+    }
+
+    res.json(orders);
+  } catch (error) {
+    console.error("Orders fetch error:", error);
+    res.status(500).json({
+      error: "Server error",
+      details: error.message,
+    });
+  }
+});
+
 app.post("/api/profile", (req, res) => {
   const { username, email, currentPassword, newPassword } = req.body;
 
-  // ⚠️ VULNERABILITY: No authentication check
-  // ⚠️ VULNERABILITY: No input sanitization
   res.json({
     success: true,
-    message: `Profile updated for ${username}`, // XSS vulnerable
-    data: req.body, // Echoing back unsanitized input
+    message: `Profile updated for ${username}`,
+    data: req.body,
   });
 });
 
-// Dashboard statistics
-app.get("/api/dashboard/stats", (req, res) => {
-  res.json({
-    totalUsers: sampleUsers.length,
-    totalOrders: sampleOrders.length,
-    totalRevenue: sampleOrders.reduce((sum, order) => sum + order.amount, 0),
-    activeOrders: sampleOrders.filter(
-      (o) => o.status === "Processing" || o.status === "Pending"
-    ).length,
-  });
+app.get("/api/dashboard/stats", async (req, res) => {
+  try {
+    let stats = {};
+
+    if (db) {
+      const [userCount] = await db.execute(
+        "SELECT COUNT(*) as count FROM users"
+      );
+      const [orderCount] = await db.execute(
+        "SELECT COUNT(*) as count FROM orders"
+      );
+      const [revenue] = await db.execute(
+        "SELECT SUM(amount) as total FROM orders"
+      );
+      const [activeOrders] = await db.execute(
+        "SELECT COUNT(*) as count FROM orders WHERE status IN ('Processing', 'Pending')"
+      );
+
+      stats = {
+        totalUsers: userCount[0].count,
+        totalOrders: orderCount[0].count,
+        totalRevenue: revenue[0].total || 0,
+        activeOrders: activeOrders[0].count,
+      };
+    } else {
+      stats = {
+        totalUsers: fallbackUsers.length,
+        totalOrders: fallbackOrders.length,
+        totalRevenue: fallbackOrders.reduce(
+          (sum, order) => sum + order.amount,
+          0
+        ),
+        activeOrders: fallbackOrders.filter(
+          (o) => o.status === "Processing" || o.status === "Pending"
+        ).length,
+      };
+    }
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Stats fetch error:", error);
+    res.status(500).json({
+      error: "Server error",
+      details: error.message,
+    });
+  }
 });
 
-// ⚠️ INTENTIONALLY VULNERABLE: Settings endpoint with no validation
 app.post("/api/settings", (req, res) => {
   const settings = req.body;
 
-  // ⚠️ VULNERABILITY: No input validation
-  // ⚠️ VULNERABILITY: Potential for stored XSS
   console.log("Settings updated:", settings);
 
   res.json({
     success: true,
     message: "Settings updated successfully",
-    settings: settings, // Echoing back unsanitized input
+    settings: settings,
   });
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({
     error: "Something went wrong!",
-    details: err.message, // ⚠️ VULNERABILITY: Exposing error details
+    details: err.message,
+    stack: err.stack,
   });
 });
 
 app.listen(PORT, () => {
-  console.log(`
-    🚨 VULNERABLE ADMIN DASHBOARD API 🚨
-    
-    ⚠️  WARNING: This application contains intentional security vulnerabilities!
-    ⚠️  Use only for educational and ethical security testing purposes.
-    
-    Server running on port ${PORT}
-    
-    Known Vulnerabilities Included:
-    - SQL Injection in login and search
-    - XSS via unsanitized input/output
-    - No CSRF protection
-    - Weak session management
-    - No input validation
-    - Information disclosure in errors
-    
-    Test Payloads:
-    - SQL Injection: Username: admin' OR '1'='1' --
-    - XSS: <script>alert('XSS')</script>
-    `);
+  console.log(`Server running on port ${PORT}`);
 });
 
-// Connect to database
 connectDB();

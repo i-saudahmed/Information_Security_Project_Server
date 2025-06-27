@@ -11,7 +11,7 @@ A simple admin dashboard backend API built with Node.js and Express.
 - Settings configuration
 
 ## Setup
-
+ 
 ### Prerequisites
 
 - Node.js (v14 or higher)
